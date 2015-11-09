@@ -98,6 +98,37 @@ def getOffTargetsNGG(sequence, bowtiePath, indexPath, exons, genes, coreMismatch
     
     return offtargets
 
+# Cpf1
+def getOffTargetsTTTN(sequence, bowtiePath, indexPath, exons, genes, totalMismatches, PAM):
+    
+    
+    command = bowtiePath + os.path.sep + "bowtie " + " -a " + indexPath + " -n " + str(2 + 1)  # plus 1 mismatch in the PAM, maximum 3!
+    command = command + " -l 6"  # minimum 5, additional 4 bases from the PAM
+    command = command + " -e " + str(totalMismatches * 30 + 30)
+    command = command + " -y "  # try hard to find all mismatched seeds
+    command = command + " --quiet "  # just print alignments, no info
+    command = command + " -c TTTN" + sequence[len(PAM):]
+    bowtieOutput = os.popen(command, "r")
+    offtargets = []
+    
+    while True:
+        line = bowtieOutput.readline()
+        if not line: break
+        
+        columns = line.rstrip('\n').split('\t')
+        mismatches = columns[7].split(':')
+        # mismatches in the PAM are not allowed
+        # bowtie shows the mismatches wrt. the input sequence, independently of the orientation of the alignment
+        if int(mismatches[0]) < (len(PAM) - 1):
+        # if mismatches[0] == '0' or mismatches[0] == '1':
+            continue
+        
+        newOfftarget = Offtarget(True, columns[2], columns[1], int(columns[3]), columns[7], columns[4], len(sequence), len(PAM), "NA")
+        newOfftarget.setGeneInfo(exons, genes)
+        offtargets.append(newOfftarget)
+    
+    return offtargets
+
 def getOffTargetsOtherPAMs(sequence, bowtiePath, indexPath, exons, genes, totalMismatches, PAM):
     # NNGRRT, NNNNGATT, NNAGAAW, NAAAAC 
     # A**C**, AATC****, *TTCT**, GTTTT*
@@ -120,7 +151,7 @@ def getOffTargetsOtherPAMs(sequence, bowtiePath, indexPath, exons, genes, totalM
         # we need to check the the matched sequence has a valid PAM 
         if PAM == "NNGRRT":  # A**C**
             # mismatches substituting the 'R' wildcard (first two) must be 'A' or 'G'
-            if not (mismatches[0][2] in 'AG' and mismatches[1][2] in 'AG'):
+            if (columns[1] == '-' and not (mismatches[0][2] in 'AG' and mismatches[1][2] in 'AG')) or (columns[1] == '+' and not (mismatches[0][2] in 'TC' and mismatches[1][2] in 'TC')):
                 continue
         if PAM == "NNNNGATT":  #AATC****
             # all mismatches in the seed (l 5) allowed
@@ -145,6 +176,8 @@ def getOffTargets(sequence, bowtiePath, indexPath, exons, genes, coreMismatches,
         offtargets = getOffTargetsNGG(sequence, bowtiePath, indexPath, exons, genes, coreMismatches, coreRange, totalMismatches, "CCN")   
         if pamType == 'NRG': 
             offtargets = offtargets + getOffTargetsNGG(sequence, bowtiePath, indexPath, exons, genes, coreMismatches, coreRange, totalMismatches, "CTN")
+    elif pamType == 'TTTN':
+        offtargets = getOffTargetsTTTN(sequence, bowtiePath, indexPath, exons, genes, totalMismatches, pamType)
     else:
         offtargets = getOffTargetsOtherPAMs(sequence, bowtiePath, indexPath, exons, genes, totalMismatches, pamType)
     
@@ -153,7 +186,41 @@ def getOffTargets(sequence, bowtiePath, indexPath, exons, genes, coreMismatches,
     return offtargets
 
 class Offtarget:
-    def __init__(self, chromosome, strand, start, substitutions, sequence, lengthSeq, lengthPAM, coreRange):
+    # New offtarget site coming for forward search, TTTN
+    def __newFwd(self, chromosome, strand, start, substitutions, sequence, lengthSeq, lengthPAM, coreRange):
+        self.chromosome = chromosome
+        self.strand = strand
+        if strand == "+":  # the search is done with the forward sequence!
+            self.sequence = list(sequence)  # to make the string modifiable
+        else:
+            self.sequence = list(reverse_complement(sequence))  # to make the string modifiable
+        self.start = start  # assuming bed coordinates
+        self.end = start + lengthSeq
+        
+        tmp = substitutions.split(",")
+        
+        self.mismatches = len(tmp) - 1
+        self.alignment = ['|'] * (lengthSeq - lengthPAM)
+        self.score = 0
+        for substitution in tmp:
+            [idx, nt] = substitution.split(':')
+            idx = int(idx)
+            if strand == "+":
+                self.sequence[idx] = nt[0]
+            else:
+                self.sequence[idx] = reverse_complement(nt[0])
+            if idx < lengthPAM:  # The mismatch in the PAM is not considered for score calculation of alignment 
+                continue
+            self.score = self.score + pow(1.2, idx - lengthPAM + 1)
+            self.alignment[idx - lengthPAM] = '-'
+        if coreRange > 0 and coreRange != "NA":
+            self.alignment = "PAM[" + "".join(self.alignment[:coreRange]) + "]" + "".join(self.alignment[coreRange:])
+        else:
+            self.alignment = "PAM" + "".join(self.alignment)
+        self.sequence = "".join(self.sequence)
+        
+    # New offtarget site coming for reverse search, NGG and other PAMs
+    def __newRev(self, chromosome, strand, start, substitutions, sequence, lengthSeq, lengthPAM, coreRange):
         self.chromosome = chromosome
         if strand == "+":  # the search is done with the reverse complemented sequence!
             self.strand = "-"
@@ -163,7 +230,7 @@ class Offtarget:
             self.sequence = list(reverse_complement(sequence))  # to make the string modifiable
         self.start = start  # assuming bed coordinates
         self.end = start + lengthSeq
-        # self.substitutions = substitutions[6:]  # we are not interested in the N for the PAM
+        
         tmp = substitutions.split(",")
         
         self.mismatches = len(tmp) - 1
@@ -185,7 +252,13 @@ class Offtarget:
         else:
             self.alignment = "".join(self.alignment) + "PAM"
         self.sequence = reverse_complement("".join(self.sequence))
-        # self.PAM = "N" + self.sequence[-2:]
+        
+        
+    def __init__(self, forward, chromosome, strand, start, substitutions, sequence, lengthSeq, lengthPAM, coreRange):
+        if(forward):
+            self.__newFwd(chromosome, strand, start, substitutions, sequence, lengthSeq, lengthPAM, coreRange)
+        else:
+            self.__newRev(chromosome, strand, start, substitutions, sequence, lengthSeq, lengthPAM, coreRange)
        
     def setGeneInfo(self, exons, genes):
         closest = exons.closest(self.chromosome, self.start, self.end)
@@ -336,18 +409,32 @@ def addCandidateTargets(pam, target_size, sgRNA5, sgRNA3, query, strand, candida
     reg_exp = build_expression(pam)
     sgRNA5_re = '^' + build_expression(sgRNA5)
     sgRNA3_re = build_expression(sgRNA3) + '$'
-    indices = [m.start() for m in re.finditer('(?=' + reg_exp + ')', query, re.I)]
-    for index in indices:
-        if (index - target_size) < 0:
-            continue
-        candidate_sequence = query[index - target_size:index]
-        pam_sequence = query[index:index + len(pam)]
-        if (not re.search(sgRNA5_re, candidate_sequence) is None) and (not re.search(sgRNA3_re, candidate_sequence) is None):
-            # we need to transform the index from the reversed sequence to the forward sequence
-            if strand == '+':
-                candidates.add(candidate_sequence + pam_sequence, index - target_size, strand, fwdPrimer, revPrimer, len(pam))
-            else:
-                candidates.add(candidate_sequence + pam_sequence, len(query) - (index + len(pam)), strand, fwdPrimer, revPrimer, len(pam))
+    if pam == 'TTTN':
+        indices = [m.start() for m in re.finditer('(?=' + reg_exp + ')', query, re.I)]
+        for index in indices:
+            if (index + target_size + len(pam)) > len(query):
+                continue
+            candidate_sequence = query[index + len(pam):index + len(pam) + target_size]
+            pam_sequence = query[index:index + len(pam)]
+            if (not re.search(sgRNA5_re, candidate_sequence) is None) and (not re.search(sgRNA3_re, candidate_sequence) is None):
+                # we need to transform the index from the reversed sequence to the forward sequence
+                if strand == '+':
+                    candidates.add(pam_sequence + candidate_sequence, index, strand, fwdPrimer, revPrimer, len(pam))
+                else:
+                    candidates.add(pam_sequence + candidate_sequence, len(query) - (index + target_size + len(pam)), strand, fwdPrimer, revPrimer, len(pam))
+    else:    
+        indices = [m.start() for m in re.finditer('(?=' + reg_exp + ')', query, re.I)]
+        for index in indices:
+            if (index - target_size) < 0:
+                continue
+            candidate_sequence = query[index - target_size:index]
+            pam_sequence = query[index:index + len(pam)]
+            if (not re.search(sgRNA5_re, candidate_sequence) is None) and (not re.search(sgRNA3_re, candidate_sequence) is None):
+                # we need to transform the index from the reversed sequence to the forward sequence
+                if strand == '+':
+                    candidates.add(candidate_sequence + pam_sequence, index - target_size, strand, fwdPrimer, revPrimer, len(pam))
+                else:
+                    candidates.add(candidate_sequence + pam_sequence, len(query) - (index + len(pam)), strand, fwdPrimer, revPrimer, len(pam))
 
 def valid_dinucleotideIUPAC(string):
     validChars = ['A', 'C', 'G', 'T', 'N'] + iupac_code.keys()
@@ -468,14 +555,21 @@ def doSearch(name, query, pamType, targetSize, totalMismatches, coreLength, core
                 output.write('Oligo substituting fwd\t' + str(candidates.sites[idx].oligoSfwd) + '\n')
                 output.write('Oligo substituting rev\t' + str(candidates.sites[idx].oligoSrev) + '\n')
         
-        output.write('Chromosome\tstart\tend\tstrand\tMM\ttarget_seq\tPAM\talignment\tdistance\tposition\tgene name\tgene id\n')
+        if(pamType == 'TTTN'):
+            output.write('Chromosome\tstart\tend\tstrand\tMM\tPAM\ttarget_seq\talignment\tdistance\tposition\tgene name\tgene id\n')
+        else:
+            output.write('Chromosome\tstart\tend\tstrand\tMM\ttarget_seq\tPAM\talignment\tdistance\tposition\tgene name\tgene id\n')
         for idx2 in range(0, len(candidates.sites[idx].offTargets)):
             # in html output only top 20 offtarget sites
             offTarget = candidates.sites[idx].offTargets[idx2]
             
             output.write("\t".join(offTarget.getGenomicCoordinates()))
             output.write("\t" + offTarget.strand)
-            output.write("\t" + str(offTarget.mismatches) + "\t" + offTarget.sequence[:-len(pamType)] + "\t" + offTarget.sequence[-len(pamType):])
+            output.write("\t" + str(offTarget.mismatches))
+            if(pamType == 'TTTN'):
+                output.write("\t" + offTarget.sequence[:len(pamType)] + "\t" + offTarget.sequence[len(pamType):])
+            else:
+                 output.write("\t" + offTarget.sequence[:-len(pamType)] + "\t" + offTarget.sequence[-len(pamType):])
             output.write("\t" + offTarget.alignment + "\t" + str(offTarget.distance) + "\t" + getPlainOTPosition(offTarget.distance, offTarget.intragenic))
             output.write("\t" + offTarget.geneName + "\t" + offTarget.geneID + "\n")
         output.write("\n")
@@ -499,7 +593,7 @@ if __name__ == "__main__":
     parser.add_argument("--index", metavar="<file>" , help="Path to the bowtie index files including the name of the index.", required=True)
     parser.add_argument("--bowtie", metavar="<folder>", help="Path to the folder where the executable bowtie is.", default="." + os.path.sep)
     parser.add_argument("--targetSize", metavar="<int>", help="Target site length. (default: %(default)s)", default=20, type=int)
-    parser.add_argument("--pam", help="PAM type. (default: %(default)s)", default="NGG", choices=['NGG', 'NRG', 'NNGRRT', 'NNNNGATT', 'NNAGAAW', 'NAAAAC'])
+    parser.add_argument("--pam", help="PAM type. (default: %(default)s)", default="NGG", choices=['NGG', 'NRG', 'TTTN', 'NNGRRT', 'NNNNGATT', 'NNAGAAW', 'NAAAAC'])
     parser.add_argument("--sgRNA5", metavar="<sequence>", type=valid_dinucleotideIUPAC, help="Filter candidates target sites with the most 5 prime nucleotides defined by this sequence. IUPAC code allowed. (default: %(default)s)", default="NN")
     parser.add_argument("--sgRNA3", metavar="<sequence>", type=valid_dinucleotideIUPAC, help="Filter candidates target sites with the most 5 prime nucleotides defined by this sequence. IUPAC code allowed. (default: %(default)s)", default="NN")
     parser.add_argument("--fwdOverhang", metavar="<sequence>", type=valid_overhang, help="Sequence of the 5 prime forward cloning oligo. (default: %(default)s)", default="TAGG")
