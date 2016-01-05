@@ -92,7 +92,7 @@ def getOffTargetsNGG(sequence, bowtiePath, indexPath, exons, genes, coreMismatch
         if int(mismatches[0]) < (len(revPAM) - 1):
             continue
         
-        newOfftarget = Offtarget(columns[2], columns[1], int(columns[3]), columns[7], columns[4], len(sequence), 3, coreRange)
+        newOfftarget = Offtarget(False, columns[2], columns[1], int(columns[3]), columns[7], columns[4], len(sequence), 3, coreRange)
         newOfftarget.setGeneInfo(exons, genes)
         offtargets.append(newOfftarget)
     
@@ -164,7 +164,7 @@ def getOffTargetsOtherPAMs(sequence, bowtiePath, indexPath, exons, genes, totalM
             # all mismatches in the seed (l 5) allowed
             pass
         
-        newOfftarget = Offtarget(columns[2], columns[1], int(columns[3]), columns[7], columns[4], len(sequence), len(PAM), "NA")
+        newOfftarget = Offtarget(False, columns[2], columns[1], int(columns[3]), columns[7], columns[4], len(sequence), len(PAM), "NA")
         newOfftarget.setGeneInfo(exons, genes)
         offtargets.append(newOfftarget)
     
@@ -342,7 +342,7 @@ class sgRNAbindingSite:
                 try:
                     averDistance = averDistance + math.log10(offTarget.distance)
                 except ValueError:
-                    print offTarget.distance
+                    print(offTarget.distance)
             else:
                 averDistance = averDistance + 0
             
@@ -437,7 +437,7 @@ def addCandidateTargets(pam, target_size, sgRNA5, sgRNA3, query, strand, candida
                     candidates.add(candidate_sequence + pam_sequence, len(query) - (index + len(pam)), strand, fwdPrimer, revPrimer, len(pam))
 
 def valid_dinucleotideIUPAC(string):
-    validChars = ['A', 'C', 'G', 'T', 'N'] + iupac_code.keys()
+    validChars = ['A', 'C', 'G', 'T', 'N'] + list(iupac_code.keys())
     string = string.upper()
     if string != ''.join(c for c in string if c in validChars) or len(string) != 2:
         msg = "%r is not a valid dinucleotide sequence" % string
@@ -468,7 +468,7 @@ def doSearch(name, query, pamType, targetSize, totalMismatches, coreLength, core
             exons.loadFile(exonsFile)
             genes.loadFile(genesFile)
         except ImportError:
-            pass
+            sys.stderr.write('The bx-python module is not available. Ignoring exon and gene files!\n')
     
     coordinates = getSeqCoords(query, bowtiePath, indexPath)
     if not coordinates is None:
@@ -589,7 +589,7 @@ if __name__ == "__main__":
         
         Have fun using CCTop!
         '''))
-    parser.add_argument("--input", metavar="<file>", type=file, help="Fasta file containing the sequence(s) to be scanned for sgRNA candidates.", required=True)
+    parser.add_argument("--input", metavar="<file>", type=argparse.FileType('r'), help="Fasta file containing the sequence(s) to be scanned for sgRNA candidates.", required=True)
     parser.add_argument("--index", metavar="<file>" , help="Path to the bowtie index files including the name of the index.", required=True)
     parser.add_argument("--bowtie", metavar="<folder>", help="Path to the folder where the executable bowtie is.", default="." + os.path.sep)
     parser.add_argument("--targetSize", metavar="<int>", help="Target site length. (default: %(default)s)", default=20, type=int)
